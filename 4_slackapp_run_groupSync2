@@ -1,0 +1,254 @@
+#lambda_function.py
+
+import boto3
+import os
+import json
+import requests
+import urllib.parse
+
+SLACK_CHANNEL_ID = "xxxxxx"
+
+HEADERS = {
+    'Accept': 'application/json',
+    'Content-type': 'application/json',
+}
+
+MONITOR_BUCKET = os.environ['MONITOR_BUCKET'] 
+TEXT_FILE = "groups_config.txt"
+s3 = boto3.client('s3', endpoint_url=os.environ['S3_ENDPOINT']) 
+
+def lambda_handler(event, context):
+    data_from_slack = event["Records"][0]["Sns"]["Message"]
+    json_slack_data = json.loads(data_from_slack)
+    response_url = json_slack_data["response_url"]
+    
+    groups_config = getGroupsConfig()
+    
+    
+    if json_slack_data["actions"][0]["action_id"] == "add_google_group":
+        group_category, category, google_group = getAdd(json_slack_data)
+        if group_category: 
+            add_google_group(group_category, category, google_group, groups_config)
+            write_new_groups_config(groups_config)
+            print_group_category(groups_config, group_category, response_url)
+    elif json_slack_data["actions"][0]["action_id"] == "remove_google_group":
+        group_category, category, google_group = getAdd(json_slack_data)
+        if group_category: 
+            remove_google_group(group_category, category, google_group, groups_config)
+            write_new_groups_config(groups_config)
+            print_group_category(groups_config, group_category, response_url)
+    else:
+        getSelectedOption(json_slack_data, groups_config)
+        
+    return 0
+
+def getGroupsConfig():
+    resp = s3.get_object(Bucket=MONITOR_BUCKET, Key=TEXT_FILE) 
+    file_content = resp['Body'].read().decode('utf-8') 
+    groups_config = json.loads(file_content)
+    
+    return groups_config
+    
+def getAdd(json_slack_data):
+    response_json = {}
+    category = ""
+    google_group = ""
+    
+    response_url = json_slack_data["response_url"]
+    
+    group_category = urllib.parse.unquote_plus(json_slack_data["actions"][0]["value"])
+    
+    for k, v in json_slack_data['state']['values'].items():
+        
+        if "group_category" in v:
+            category = urllib.parse.unquote_plus(v["group_category"]["value"])
+        elif "google_group" in v:
+            google_group = urllib.parse.unquote_plus(v["google_group"]["value"])
+            
+    if google_group.endswith('@auth0.com'):
+            
+        return group_category, category, google_group
+    
+    else:
+        response_json["text"] = ":alarm-animated: Google Group is not within the Auth0 org."
+        response = requests.post(
+            response_url, data=json.dumps(response_json),
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        return None, None, None
+        
+    
+def getSelectedOption(json_slack_data, groups_config):
+    response_json = {}
+    
+    response_url = json_slack_data["response_url"]
+    invoker = json_slack_data["user"]["username"]
+    group_category = urllib.parse.unquote_plus(json_slack_data["actions"][0]["selected_option"]["value"])
+    
+    if "View " in group_category:
+        group_category = group_category.replace("View ", "")
+        
+        print_group_category(groups_config, group_category, response_url)
+        
+    elif "Add " in group_category:
+        
+        group_category = group_category.replace("Add ", "")
+        
+        blocks = [ 
+            {
+			"type": "input",
+			"element": {
+				"type": "plain_text_input",
+				"action_id": "group_category"
+			    },
+			"label": {
+				"type": "plain_text",
+				"text": "Add " + group_category + " sync value:",
+				"emoji": True
+			    }
+		    },
+            {
+			"type": "input",
+			"element": {
+				"type": "plain_text_input",
+				"action_id": "google_group"
+			    },
+			"label": {
+				"type": "plain_text",
+				"text": "Google Group:",
+				"emoji": True
+			    }
+		    },
+		    {
+			"type": "actions",
+			"elements": [
+				{
+					"type": "button",
+					"action_id": "add_google_group",
+					"text": {
+						"type": "plain_text",
+						"emoji": True,
+						"text": "Submit"
+					},
+					"style": "primary",
+					"value": group_category
+				}
+			]
+		}
+        ]
+        
+        response_json["blocks"] = blocks
+        response = requests.post(
+            response_url, data=json.dumps(response_json),
+            headers={'Content-Type': 'application/json'}
+        )
+    elif "Remove " in group_category:
+        
+        group_category = group_category.replace("Remove ", "")
+        
+        blocks = [ 
+            {
+			"type": "input",
+			"element": {
+				"type": "plain_text_input",
+				"action_id": "group_category"
+			    },
+			"label": {
+				"type": "plain_text",
+				"text": "Remove " + group_category + " value:",
+				"emoji": True
+			    }
+		    },
+            {
+			"type": "input",
+			"element": {
+				"type": "plain_text_input",
+				"action_id": "google_group"
+			    },
+			"label": {
+				"type": "plain_text",
+				"text": "Google Group:",
+				"emoji": True
+			    }
+		    },
+		    {
+			"type": "actions",
+			"elements": [
+				{
+					"type": "button",
+					"action_id": "remove_google_group",
+					"text": {
+						"type": "plain_text",
+						"emoji": True,
+						"text": "Submit"
+					},
+					"style": "primary",
+					"value": group_category
+				}
+			]
+		}
+        ]
+        
+        response_json["blocks"] = blocks
+        response = requests.post(
+            response_url, data=json.dumps(response_json),
+            headers={'Content-Type': 'application/json'}
+        )
+        
+def add_google_group(group_category, category, google_group, groups_config):
+    if category in groups_config[group_category]:
+        groups_config[group_category][category].append(google_group)
+    else:
+        groups_config[group_category][category] = [google_group]
+
+    return groups_config
+    
+
+def write_new_groups_config(groups_config):
+    s3.put_object(Bucket=MONITOR_BUCKET, Key=TEXT_FILE, Body=(bytes(json.dumps(groups_config).encode('UTF-8'))))
+                
+            
+def remove_google_group(group_category, category, google_group, groups_config):
+    if category in groups_config[group_category]:
+        groups_config[group_category][category].remove(google_group)
+        
+    if len(groups_config[group_category][category]) == 0:
+        groups_config[group_category].pop(category)
+
+    return groups_config        
+
+
+def print_group_category(groups_config, group_category, response_url):
+    response_json = {}
+    string = "" 
+        
+    for key in groups_config.keys():
+            if key == group_category:
+                for k, v in groups_config[group_category].items():
+                    string = string + "*" + k + "*: " + str(v) + "\n"
+                
+                blocks = [ 
+                    {
+                        "type": "header", 
+                        "text": {        
+                            "type": "plain_text", 
+                            "text": "Sync Groups" } 
+                            
+                    }, 
+                    { 
+                        "type": "divider" 
+                        
+                    },
+                    {
+                    "type": "section",
+                    "text": {"type": "mrkdwn","text": string }
+        			}
+                ]
+        
+                response_json["blocks"] = blocks
+                response = requests.post(
+                    response_url, data=json.dumps(response_json),
+                    headers={'Content-Type': 'application/json'}
+                )
+    
