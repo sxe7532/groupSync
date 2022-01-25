@@ -16,7 +16,7 @@ Syntax: `/groupsync
 
 
 # Simple notification service ARN
-SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:712031947526:slackapp_run_groupSync'
+SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:xxx:slackapp_run_groupSync'
 SLACK_CHANNEL_ID = "xxxxxx"
 
 
